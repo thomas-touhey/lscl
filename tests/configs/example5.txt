@@ -1,0 +1,11 @@
+# NOTE: Ellipsis (...) have been removed in this example.
+output {
+  if [type] == "apache" {
+    if [status] =~ /^5\d\d/ {
+      nagios {   }
+    } else if [status] =~ /^4\d\d/ {
+      elasticsearch {  }
+    }
+    statsd { increment => "apache.%{status}" }
+  }
+}
