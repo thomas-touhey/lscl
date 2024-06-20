@@ -91,7 +91,7 @@ _LSCL_TOKEN_PATTERN = re.compile(
     r"(#[^\n]*)|\[([^\[\],]+)\]"
     + r"|(=>|==|!=|<=|>=|<|>|=~|!~|\{|\}|\[|\]|\(|\)|!|,)"
     + r'|"((?:\\.|[^"])*)"|\'((?:\\.|[^\'])*)\'|/((?:\\.|[^/])*)/'
-    + r"|(-?[0-9]+(?:\.[0-9]*)?)|([A-Za-z_][A-Za-z0-9_]+)|([A-Za-z0-9_-]+)",
+    + r"|([A-Za-z0-9\._-]+)",
     re.MULTILINE,
 )
 """Pattern used by the lexer to match raw tokens from a string.
@@ -116,13 +116,9 @@ Case 3. Special symbols.
 Case 4. Double quoted string.
 Case 5. Single quoted string.
 Case 6. Pattern.
-Case 7. Number.
-Case 8. Bareword.
-    Barewords may also match special bareword-compatible tokens, including
+Case 7. Bareword, number, and digit barewords.
+    This also matches special bareword-compatible tokens, including
     "if", "else", "in", "not", "and", "or", "xor", "nand".
-
-Case 9. Barewords starting with numbers.
-    This may be used as block names, e.g. "0hello".
 
 NOTE: The original grammar checks for "newline or end of input", but we
 actually check for the end of input in the lexer function directly.
@@ -131,6 +127,12 @@ NOTE: In case of barewords, the source language actually requires at least
 two characters, but that may be an oversight that could be fixed later, so
 we want to support one-character barewords.
 """
+
+_LSCL_NUMBER_PATTERN = re.compile(r"-?[0-9]+(?:\.[0-9]*)?")
+"""Number pattern."""
+
+_LSCL_BAREWORD_PATTERN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+"""Bareword pattern."""
 
 _LSCL_ESCAPE_PATTERN = re.compile(r"\\(.)")
 """Pattern used to unescape quoted strings."""
@@ -508,47 +510,46 @@ def parse_lscl_tokens(
                 offset=runk.offset,
             )
         elif match[7] is not None:
-            # Case 7. Number.
-            raw_number = match[7]
-            if "." in raw_number:
-                number: int | Decimal = Decimal(raw_number)
-            else:
-                number = int(raw_number)
-
-            yield LsclNumberToken(
-                type=LsclTokenType.NUMBER,
-                value=number,
-                raw=raw_number,
-                line=runk.line,
-                column=runk.column,
-                offset=runk.offset,
-            )
-        elif match[8] is not None:
-            # Case 8. Bareword.
-            bareword = match[8]
+            # Case 7. Bareword, digit, or bareword number.
+            raw_word = match[7]
             try:
                 yield LsclSimpleToken(
-                    type=_LSCL_SIMPLE_TOKEN_MAPPING[bareword],
+                    type=_LSCL_SIMPLE_TOKEN_MAPPING[raw_word],
                     line=runk.line,
                     column=runk.column,
                     offset=runk.offset,
                 )
             except KeyError:
-                yield LsclStringToken(
-                    type=LsclTokenType.BAREWORD,
-                    value=bareword,
-                    line=runk.line,
-                    column=runk.column,
-                    offset=runk.offset,
-                )
-        elif match[9] is not None:
-            yield LsclStringToken(
-                type=LsclTokenType.DIGIT_BAREWORD,
-                value=match[9],
-                line=runk.line,
-                column=runk.column,
-                offset=runk.offset,
-            )
+                if _LSCL_NUMBER_PATTERN.fullmatch(raw_word):
+                    if "." in raw_word:
+                        number: int | Decimal = Decimal(raw_word)
+                    else:
+                        number = int(raw_word)
+
+                    yield LsclNumberToken(
+                        type=LsclTokenType.NUMBER,
+                        value=number,
+                        raw=raw_word,
+                        line=runk.line,
+                        column=runk.column,
+                        offset=runk.offset,
+                    )
+                elif _LSCL_BAREWORD_PATTERN.fullmatch(raw_word):
+                    yield LsclStringToken(
+                        type=LsclTokenType.BAREWORD,
+                        value=raw_word,
+                        line=runk.line,
+                        column=runk.column,
+                        offset=runk.offset,
+                    )
+                else:
+                    yield LsclStringToken(
+                        type=LsclTokenType.DIGIT_BAREWORD,
+                        value=raw_word,
+                        line=runk.line,
+                        column=runk.column,
+                        offset=runk.offset,
+                    )
         else:  # pragma: no cover
             raise NotImplementedError()
 
@@ -809,7 +810,7 @@ def _parse_lscl_rvalue(
 
         raise UnexpectedLsclToken(token)
 
-    return LsclMethodCall(name=method, params=params)
+    return LsclMethodCall(name=method, params=params), next(token_iter)
 
 
 def _parse_lscl_condition(
@@ -940,34 +941,26 @@ def _parse_lscl_condition(
             # extend the original conditions instead of adding a new
             # sublevel, but we prefer not to, in order to preserve the
             # meaning of the original.
-            new = current
             current.conditions.append(new)
+            new = current
 
         # Check the next token, to check if it's either the end, or a boolean
         # operator.
         if token.type == end_token_type:
             break
 
-        if token.type == LsclTokenType.AND and not isinstance(
-            current,
-            LsclAnd,
-        ):
-            current = LsclAnd(conditions=[new])
-        elif token.type == LsclTokenType.OR and not isinstance(
-            current,
-            LsclOr,
-        ):
-            current = LsclOr(conditions=[new])
-        elif token.type == LsclTokenType.XOR and not isinstance(
-            current,
-            LsclXor,
-        ):
-            current = LsclXor(conditions=[new])
-        elif token.type == LsclTokenType.NAND and not isinstance(
-            current,
-            LsclNand,
-        ):
-            current = LsclNand(conditions=[new])
+        if token.type == LsclTokenType.AND:
+            if not isinstance(current, LsclAnd):
+                current = LsclAnd(conditions=[new])
+        elif token.type == LsclTokenType.OR:
+            if not isinstance(current, LsclOr):
+                current = LsclOr(conditions=[new])
+        elif token.type == LsclTokenType.XOR:
+            if not isinstance(current, LsclXor):
+                current = LsclXor(conditions=[new])
+        elif token.type == LsclTokenType.NAND:
+            if not isinstance(current, LsclNand):
+                current = LsclNand(conditions=[new])
         else:
             raise UnexpectedLsclToken(token)
 

@@ -30,21 +30,38 @@
 
 from __future__ import annotations
 
+from decimal import Decimal
 from itertools import zip_longest
 from pathlib import Path
 
 import pytest
 
+from lscl.errors import DecodeError
 from lscl.lang import (
+    LsclAnd,
+    LsclAttribute,
+    LsclBlock,
     LsclConditions,
     LsclContent,
     LsclEqualTo,
+    LsclGreaterThan,
+    LsclGreaterThanOrEqualTo,
+    LsclIn,
+    LsclLessThan,
+    LsclLessThanOrEqualTo,
     LsclMatch,
-    LsclBlock,
-    LsclAttribute,
+    LsclMethodCall,
+    LsclNand,
+    LsclNot,
+    LsclNotEqualTo,
+    LsclNotIn,
+    LsclNotMatch,
+    LsclOr,
     LsclSelector,
+    LsclXor,
 )
 from lscl.parser import (
+    LsclNumberToken,
     LsclSimpleToken,
     LsclStringToken,
     LsclToken,
@@ -55,6 +72,66 @@ from lscl.parser import (
 
 
 CONFIGS_PATH = Path(__file__).parent / "configs"
+
+
+@pytest.mark.parametrize(
+    "raw,tokens",
+    (
+        (
+            "0auth {}",
+            [
+                LsclStringToken(
+                    type=LsclTokenType.DIGIT_BAREWORD,
+                    value="0auth",
+                ),
+                LsclSimpleToken(type=LsclTokenType.LBRACE),
+                LsclSimpleToken(type=LsclTokenType.RBRACE),
+            ],
+        ),
+        (
+            "if hello('world', [a], 5) == 0 {}",
+            [
+                LsclSimpleToken(type=LsclTokenType.IF),
+                LsclStringToken(type=LsclTokenType.BAREWORD, value="hello"),
+                LsclSimpleToken(type=LsclTokenType.LPAREN),
+                LsclStringToken(type=LsclTokenType.SQUOT, value="world"),
+                LsclSimpleToken(type=LsclTokenType.COMMA),
+                LsclStringToken(
+                    type=LsclTokenType.SELECTOR_ELEMENT,
+                    value="a",
+                ),
+                LsclSimpleToken(type=LsclTokenType.COMMA),
+                LsclNumberToken(type=LsclTokenType.NUMBER, raw="5", value=5),
+                LsclSimpleToken(type=LsclTokenType.RPAREN),
+                LsclSimpleToken(type=LsclTokenType.EQ),
+                LsclNumberToken(type=LsclTokenType.NUMBER, raw="0", value=0),
+                LsclSimpleToken(type=LsclTokenType.LBRACE),
+                LsclSimpleToken(type=LsclTokenType.RBRACE),
+            ],
+        ),
+    ),
+)
+def test_lex(raw: str, tokens: LsclToken) -> None:
+    """Test the lexer."""
+    for i, (obtained_token, expected_token) in enumerate(
+        zip_longest(
+            parse_lscl_tokens(raw),
+            [*tokens, LsclSimpleToken(type=LsclTokenType.END)],
+        ),
+    ):
+        # Update the obtained token for comparison.
+        expected_token = expected_token.model_copy(
+            update={
+                "line": obtained_token.line,
+                "column": obtained_token.column,
+                "offset": obtained_token.offset,
+            },
+        )
+
+        assert expected_token == obtained_token, (
+            f"At index {i}, obtained {obtained_token} does not match "
+            + f"expected {expected_token}"
+        )
 
 
 @pytest.mark.parametrize(
@@ -259,7 +336,7 @@ CONFIGS_PATH = Path(__file__).parent / "configs"
         ),
     ),
 )
-def test_lexer(path: str, tokens: LsclToken) -> None:
+def test_lex_file(path: str, tokens: LsclToken) -> None:
     """Test the lexer."""
     with open(CONFIGS_PATH / path) as fp:
         raw = fp.read()
@@ -283,6 +360,196 @@ def test_lexer(path: str, tokens: LsclToken) -> None:
             f"At index {i}, obtained {obtained_token} does not match "
             + f"expected {expected_token}"
         )
+
+
+@pytest.mark.parametrize("raw", ("@" + "." * 30, "'"))
+def test_lex_invalid(raw: str) -> None:
+    """Check that invalid tokens are correctly detected."""
+    with pytest.raises(DecodeError):
+        for _ in parse_lscl_tokens(raw):
+            pass
+
+
+@pytest.mark.parametrize(
+    "raw,content",
+    (
+        (
+            "0 { a => 05.2 }",
+            [
+                LsclBlock(
+                    name="0",
+                    content=[LsclAttribute(name="a", content=Decimal("5.2"))],
+                ),
+            ],
+        ),
+        (
+            "hello => 'world'",
+            [LsclAttribute(name="hello", content="world")],
+        ),
+        (
+            "hello => -2",
+            [LsclAttribute(name="hello", content=-2)],
+        ),
+        (
+            "hello => 0.52",
+            [LsclAttribute(name="hello", content=Decimal(".52"))],
+        ),
+        (
+            "0auth {}",
+            [LsclBlock(name="0auth", content=[])],
+        ),
+        (
+            "hello => []",
+            [LsclAttribute(name="hello", content=[])],
+        ),
+        (
+            "if [a][b] == [1, 2] {}",
+            [
+                LsclConditions(
+                    conditions=[
+                        (
+                            LsclEqualTo(
+                                first=LsclSelector(names=["a", "b"]),
+                                second=[1, 2],
+                            ),
+                            [],
+                        ),
+                    ],
+                ),
+            ],
+        ),
+        (
+            "if hello([a], 'world', 5) == 0 {}",
+            [
+                LsclConditions(
+                    conditions=[
+                        (
+                            LsclEqualTo(
+                                first=LsclMethodCall(
+                                    name="hello",
+                                    params=[
+                                        LsclSelector(names=["a"]),
+                                        "world",
+                                        5,
+                                    ],
+                                ),
+                                second=0,
+                            ),
+                            [],
+                        ),
+                    ],
+                ),
+            ],
+        ),
+        (
+            "if !(1 and 2 or 3 xor 4 nand 5) {}",
+            [
+                LsclConditions(
+                    conditions=[
+                        (
+                            LsclNot(
+                                condition=LsclNand(
+                                    conditions=[
+                                        LsclXor(
+                                            conditions=[
+                                                LsclOr(
+                                                    conditions=[
+                                                        LsclAnd(
+                                                            conditions=[1, 2],
+                                                        ),
+                                                        3,
+                                                    ],
+                                                ),
+                                                4,
+                                            ],
+                                        ),
+                                        5,
+                                    ],
+                                ),
+                            ),
+                            [],
+                        ),
+                    ],
+                ),
+            ],
+        ),
+        (
+            "if (![a][b]) {}",
+            [
+                LsclConditions(
+                    conditions=[
+                        (
+                            LsclNot(condition=LsclSelector(names=["a", "b"])),
+                            [],
+                        ),
+                    ],
+                ),
+            ],
+        ),
+        (
+            "if [a] in [] or [b] not in [] or [c] != 1 { 0a {\n} }",
+            [
+                LsclConditions(
+                    conditions=[
+                        (
+                            LsclOr(
+                                conditions=[
+                                    LsclIn(
+                                        needle=LsclSelector(
+                                            names=["a"],
+                                        ),
+                                        haystack=[],
+                                    ),
+                                    LsclNotIn(
+                                        needle=LsclSelector(
+                                            names=["b"],
+                                        ),
+                                        haystack=[],
+                                    ),
+                                    LsclNotEqualTo(
+                                        first=LsclSelector(
+                                            names=["c"],
+                                        ),
+                                        second=1,
+                                    ),
+                                ],
+                            ),
+                            [LsclBlock(name="0a")],
+                        ),
+                    ],
+                ),
+            ],
+        ),
+        (
+            "if 1 <= 2 or 2 >= 1 or 1 < 2 or 2 > 1 or 'x' !~ /[a-z]+/ { "
+            + "a => b }",
+            [
+                LsclConditions(
+                    conditions=[
+                        (
+                            LsclOr(
+                                conditions=[
+                                    LsclLessThanOrEqualTo(first=1, second=2),
+                                    LsclGreaterThanOrEqualTo(
+                                        first=2,
+                                        second=1,
+                                    ),
+                                    LsclLessThan(first=1, second=2),
+                                    LsclGreaterThan(first=2, second=1),
+                                    LsclNotMatch(value="x", pattern=r"[a-z]+"),
+                                ],
+                            ),
+                            [LsclAttribute(name="a", content="b")],
+                        ),
+                    ],
+                ),
+            ],
+        ),
+    ),
+)
+def test_parse(raw: str, content: LsclContent) -> None:
+    """Check that we can parse simple content directly."""
+    assert parse_lscl(raw) == content
 
 
 @pytest.mark.parametrize(
@@ -548,11 +815,99 @@ def test_lexer(path: str, tokens: LsclToken) -> None:
                 ),
             ],
         ),
+        (
+            "else.txt",
+            [
+                LsclConditions(
+                    conditions=[
+                        (
+                            LsclEqualTo(
+                                first=LsclSelector(names=["x"]),
+                                second=5,
+                            ),
+                            [LsclBlock(name="a")],
+                        ),
+                    ],
+                    default=[LsclBlock(name="b")],
+                ),
+            ],
+        ),
     ),
 )
-def test_parse(path: str, content: LsclContent) -> None:
+def test_parse_file(path: str, content: LsclContent) -> None:
     """Test that parsing works correctly."""
     with open(CONFIGS_PATH / path) as fp:
         raw = fp.read()
 
     assert parse_lscl(raw) == content
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    (
+        ("hello => [1,]", [LsclAttribute(name="hello", content=[1])]),
+        (
+            "if [1, 2,] == [1, 2] {}",
+            [
+                LsclConditions(
+                    conditions=[
+                        (LsclEqualTo(first=[1, 2], second=[1, 2]), []),
+                    ],
+                ),
+            ],
+        ),
+        (
+            "if hello('x',) == 0 {}",
+            [
+                LsclConditions(
+                    conditions=[
+                        (
+                            LsclEqualTo(
+                                first=LsclMethodCall(
+                                    name="hello",
+                                    params=["x"],
+                                ),
+                                second=0,
+                            ),
+                            [],
+                        ),
+                    ],
+                ),
+            ],
+        ),
+    ),
+)
+def test_parse_with_trailing_commas(raw: str, expected: LsclContent) -> None:
+    """Check that trailing commas can be accepted."""
+    assert parse_lscl(raw, accept_trailing_commas=True) == expected
+
+
+@pytest.mark.parametrize(
+    "raw",
+    (
+        "{",
+        "hello => [1,]",
+        "hello => [1",
+        "hello => {",
+        "hello => {hello world",
+        "hello => 0notABareword",
+        "if [x] == [1,] {}",
+        "if [x] == [1",
+        "if {",
+        "if hello {}",
+        "if hello(2",
+        "if hello('x',) == 0 {}",
+        "if ! hello {}",
+        "if [x] in",
+        "if [x] =~",
+        "if [x] !~",
+        "if [x] }",
+        "if [x] not",
+        "if 1 {} else else {}",
+        "a { b",
+    ),
+)
+def test_parse_invalid(raw: str) -> None:
+    """Check that invalid syntax are detected correctly."""
+    with pytest.raises(DecodeError):
+        parse_lscl(raw)
