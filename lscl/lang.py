@@ -46,6 +46,7 @@ LsclData = TypeAliasType(  # type: ignore
         list["LsclData"],  # type: ignore
         str,
         int,
+        bool,
         Decimal,
     ],
 )

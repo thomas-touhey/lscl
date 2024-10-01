@@ -195,6 +195,9 @@ def _render_lscl_data(content: LsclData, /, *, prefix: str) -> str:
 
         return rendered + prefix + "]\n"
 
+    if isinstance(content, bool):
+        return "true\n" if content else "false\n"
+
     if isinstance(content, (int, float, Decimal)):
         return str(content) + "\n"
 
@@ -228,6 +231,9 @@ def _render_lscl_rvalue(content: LsclRValue, /) -> str:
             + ", ".join(_render_lscl_rvalue(param) for param in content.params)
             + ")"
         )
+
+    if isinstance(content, bool):
+        content = "true" if content else "false"
 
     if isinstance(content, str):
         return _render_lscl_string(content)  # No barewords allowed here!
@@ -407,7 +413,7 @@ def render_as_lscl(content: LsclRenderable, /) -> str:
     :param content: Content to render as LSCL.
     :return: Rendered content.
     """
-    if isinstance(content, (str, int, float, Decimal)):
+    if isinstance(content, (str, bool, int, float, Decimal)):
         return _render_lscl_data(content, prefix="")
 
     if isinstance(content, (LsclSelector, LsclMethodCall)):

@@ -189,6 +189,18 @@ from lscl.renderer import LsclRenderable, render_as_lscl
             "[\n  1,\n  2,\n  3\n]\n",
         ),
         (
+            True,
+            "true\n",
+        ),
+        (
+            False,
+            "false\n",
+        ),
+        (
+            [1, True, False, 0],
+            "[\n  1,\n  true,\n  false,\n  0\n]\n",
+        ),
+        (
             'string with "double quotes"',
             "'string with \"double quotes\"'\n",
         ),
