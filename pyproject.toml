@@ -4,7 +4,7 @@ build-backend = "poetry.core.masonry.api"
 
 [tool.poetry]
 name = "lscl"
-version = "0.2.1"
+version = "0.2.2"
 description = "Logstash configuration language handling"
 readme = "README.rst"
 homepage = "https://lscl.touhey.pro/"
