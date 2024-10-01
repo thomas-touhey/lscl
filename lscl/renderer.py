@@ -51,6 +51,7 @@ from .lang import (
     LsclIn,
     LsclLessThan,
     LsclLessThanOrEqualTo,
+    LsclLiteral,
     LsclMatch,
     LsclMethodCall,
     LsclNand,
@@ -104,7 +105,7 @@ class _LsclContentMatcher(BaseModel):
 
 
 class _LsclListMatcher(BaseModel):
-    value: list[LsclData] | dict[str, LsclData]
+    value: list[LsclData] | dict[str | LsclLiteral, LsclData]
 
 
 _lscl_list_type_adapter = TypeAdapter(_LsclContentMatcher | _LsclListMatcher)
@@ -165,16 +166,24 @@ def _render_lscl_data(content: LsclData, /, *, prefix: str) -> str:
     :param prefix: Prefix to render with.
     :return: Rendered content.
     """
+    if isinstance(content, LsclLiteral):
+        return content.content + "\n"
+
     if isinstance(content, dict):
         if not content:
             return "{}\n"
 
         rendered = "{\n"
         for key, value in content.items():
+            if isinstance(key, LsclLiteral):
+                rendered_key = key.content
+            else:
+                rendered_key = _render_lscl_string(key, use_barewords=True)
+
             rendered += (
                 prefix
                 + "  "
-                + _render_lscl_string(key, use_barewords=True)
+                + rendered_key
                 + " => "
                 + _render_lscl_data(value, prefix=prefix + "  ")
             )
@@ -216,43 +225,47 @@ def _render_lscl_selector(content: LsclSelector, /) -> str:
     return "".join(f"[{name}]" for name in content.names)
 
 
-def _render_lscl_rvalue(content: LsclRValue, /) -> str:
+def _render_lscl_rvalue(content: LsclRValue, /, *, prefix: str) -> str:
     """Render an LSCL right-value.
 
     :param content: Content to render.
     :return: Rendered right-value.
     """
+    if isinstance(content, (list, LsclLiteral)):
+        return _render_lscl_data(content, prefix=prefix)[:-1]
+
     if isinstance(content, LsclSelector):
         return _render_lscl_selector(content)
 
     if isinstance(content, LsclMethodCall):
         return (
             f"{content.name}("
-            + ", ".join(_render_lscl_rvalue(param) for param in content.params)
+            + ", ".join(
+                _render_lscl_rvalue(param, prefix=prefix)
+                for param in content.params
+            )
             + ")"
         )
-
-    if isinstance(content, bool):
-        content = "true" if content else "false"
 
     if isinstance(content, str):
         return _render_lscl_string(content)  # No barewords allowed here!
 
-    if isinstance(content, (int, float, Decimal)):
+    if isinstance(content, (int, bool, float, Decimal)):
         return str(content)
 
     raise NotImplementedError()  # pragma: no cover
 
 
-def _render_lscl_condition(content: LsclCondition, /) -> str:
+def _render_lscl_condition(content: LsclCondition, /, *, prefix: str) -> str:
     """Render an LSCL condition.
 
     :param content: Condition to render.
+    :param prefix: Prefix.
     :return: Rendered condition.
     """
     if isinstance(content, (LsclAnd, LsclOr, LsclXor, LsclNand)):
         if len(content.conditions) == 1:
-            return _render_lscl_condition(content.conditions[0])
+            return _render_lscl_condition(content.conditions[0], prefix=prefix)
 
         if isinstance(content, LsclAnd):
             op = " and "
@@ -265,7 +278,7 @@ def _render_lscl_condition(content: LsclCondition, /) -> str:
 
         rendered_conditions: list[str] = []
         for cond in content.conditions:
-            rendered = _render_lscl_condition(cond)
+            rendered = _render_lscl_condition(cond, prefix=prefix)
             if isinstance(cond, (LsclAnd, LsclOr, LsclXor, LsclNand)):
                 rendered = f"({rendered})"
 
@@ -276,69 +289,73 @@ def _render_lscl_condition(content: LsclCondition, /) -> str:
         if isinstance(content.condition, LsclSelector):
             result = "!" + _render_lscl_selector(content.condition)
         else:
-            result = "!(" + _render_lscl_condition(content.condition) + ")"
+            result = (
+                "!("
+                + _render_lscl_condition(content.condition, prefix=prefix)
+                + ")"
+            )
     elif isinstance(content, LsclIn):
         result = (
-            _render_lscl_rvalue(content.needle)
+            _render_lscl_rvalue(content.needle, prefix=prefix)
             + " in "
-            + _render_lscl_rvalue(content.haystack)
+            + _render_lscl_rvalue(content.haystack, prefix=prefix)
         )
     elif isinstance(content, LsclNotIn):
         result = (
-            _render_lscl_rvalue(content.needle)
+            _render_lscl_rvalue(content.needle, prefix=prefix)
             + " not in "
-            + _render_lscl_rvalue(content.haystack)
+            + _render_lscl_rvalue(content.haystack, prefix=prefix)
         )
     elif isinstance(content, LsclEqualTo):
         result = (
-            _render_lscl_rvalue(content.first)
+            _render_lscl_rvalue(content.first, prefix=prefix)
             + " == "
-            + _render_lscl_rvalue(content.second)
+            + _render_lscl_rvalue(content.second, prefix=prefix)
         )
     elif isinstance(content, LsclNotEqualTo):
         result = (
-            _render_lscl_rvalue(content.first)
+            _render_lscl_rvalue(content.first, prefix=prefix)
             + " != "
-            + _render_lscl_rvalue(content.second)
+            + _render_lscl_rvalue(content.second, prefix=prefix)
         )
     elif isinstance(content, LsclGreaterThanOrEqualTo):
         result = (
-            _render_lscl_rvalue(content.first)
+            _render_lscl_rvalue(content.first, prefix=prefix)
             + " >= "
-            + _render_lscl_rvalue(content.second)
+            + _render_lscl_rvalue(content.second, prefix=prefix)
         )
     elif isinstance(content, LsclLessThanOrEqualTo):
         result = (
-            _render_lscl_rvalue(content.first)
+            _render_lscl_rvalue(content.first, prefix=prefix)
             + " <= "
-            + _render_lscl_rvalue(content.second)
+            + _render_lscl_rvalue(content.second, prefix=prefix)
         )
     elif isinstance(content, LsclGreaterThan):
         result = (
-            _render_lscl_rvalue(content.first)
+            _render_lscl_rvalue(content.first, prefix=prefix)
             + " > "
-            + _render_lscl_rvalue(content.second)
+            + _render_lscl_rvalue(content.second, prefix=prefix)
         )
     elif isinstance(content, LsclLessThan):
         result = (
-            _render_lscl_rvalue(content.first)
+            _render_lscl_rvalue(content.first, prefix=prefix)
             + " < "
-            + _render_lscl_rvalue(content.second)
+            + _render_lscl_rvalue(content.second, prefix=prefix)
         )
     elif isinstance(content, LsclMatch):
         result = (
-            _render_lscl_rvalue(content.value)
+            _render_lscl_rvalue(content.value, prefix=prefix)
             + " =~ "
             + _render_lscl_pattern(content.pattern)
         )
     elif isinstance(content, LsclNotMatch):
         result = (
-            _render_lscl_rvalue(content.value)
+            _render_lscl_rvalue(content.value, prefix=prefix)
             + " !~ "
             + _render_lscl_pattern(content.pattern)
         )
     else:
-        result = _render_lscl_rvalue(content)
+        result = _render_lscl_rvalue(content, prefix=prefix)
 
     return result
 
@@ -373,7 +390,10 @@ def _render_lscl_content(content: LsclContent, /, *, prefix: str) -> str:
             before_cond = prefix
 
             for cond, body in element.conditions:
-                rendered += f"{before_cond}if " + _render_lscl_condition(cond)
+                rendered += f"{before_cond}if " + _render_lscl_condition(
+                    cond,
+                    prefix=prefix,
+                )
 
                 if body:
                     rendered += (
@@ -413,11 +433,11 @@ def render_as_lscl(content: LsclRenderable, /) -> str:
     :param content: Content to render as LSCL.
     :return: Rendered content.
     """
-    if isinstance(content, (str, bool, int, float, Decimal)):
+    if isinstance(content, (str, bool, int, float, Decimal, LsclLiteral)):
         return _render_lscl_data(content, prefix="")
 
     if isinstance(content, (LsclSelector, LsclMethodCall)):
-        return _render_lscl_rvalue(content)
+        return _render_lscl_rvalue(content, prefix="")
 
     if isinstance(
         content,
@@ -439,7 +459,7 @@ def render_as_lscl(content: LsclRenderable, /) -> str:
             LsclNotMatch,
         ),
     ):
-        return _render_lscl_condition(content)
+        return _render_lscl_condition(content, prefix="")
 
     if isinstance(content, (LsclBlock, LsclAttribute, LsclConditions)):
         return _render_lscl_content([content], prefix="")

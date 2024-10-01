@@ -43,6 +43,7 @@ from lscl.lang import (
     LsclIn,
     LsclLessThan,
     LsclLessThanOrEqualTo,
+    LsclLiteral,
     LsclMatch,
     LsclMethodCall,
     LsclNand,
@@ -211,6 +212,47 @@ from lscl.renderer import LsclRenderable, render_as_lscl
         (
             "string with 'single' and \"double\" quotes",
             '"string with \'single\' and \\"double\\" quotes"\n',
+        ),
+        # Insert literals at several positions.
+        # There should be no control whatsoever on literals.
+        (
+            LsclLiteral(content="WHATEVER I 'WANT' }"),
+            "WHATEVER I 'WANT' }\n",
+        ),
+        (
+            [LsclLiteral(content="[1, 2]"), 3],
+            "[\n  [1, 2],\n  3\n]\n",
+        ),
+        (
+            {LsclLiteral(content="special op"): "hello, world"},
+            '{\n  special op => "hello, world"\n}\n',
+        ),
+        (
+            LsclIn(needle=42, haystack=LsclLiteral(content="meaning of life")),
+            "42 in meaning of life",
+        ),
+        (
+            LsclBlock(
+                name="example",
+                content=[
+                    LsclConditions(
+                        conditions=[
+                            (
+                                LsclIn(
+                                    needle=42,
+                                    haystack=[
+                                        1,
+                                        LsclLiteral(content="hello world"),
+                                    ],
+                                ),
+                                [LsclBlock(name="wow", content=[])],
+                            ),
+                        ],
+                    ),
+                ],
+            ),
+            "example {\n  if 42 in [\n    1,\n    hello world\n  ] {\n"
+            + "    wow {}\n  }\n}\n",
         ),
     ),
 )

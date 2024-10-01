@@ -42,7 +42,8 @@ from typing_extensions import TypeAliasType
 LsclData = TypeAliasType(  # type: ignore
     "LsclData",
     Union[
-        dict[str, "LsclData"],  # type: ignore
+        "LsclLiteral",
+        dict[Union[str, "LsclLiteral"], "LsclData"],  # type: ignore
         list["LsclData"],  # type: ignore
         str,
         int,
@@ -61,6 +62,7 @@ LsclData = TypeAliasType(  # type: ignore
 LsclRValue = TypeAliasType(  # type: ignore
     "LsclRValue",
     Union[
+        "LsclLiteral",
         list["LsclData"],
         str,
         int,
@@ -93,6 +95,20 @@ LsclCondition = TypeAliasType(  # type: ignore
     ],
 )
 """Condition."""
+
+
+class LsclLiteral(BaseModel):
+    """Literal component.
+
+    This allows inserting arbitrary text in a rendered result.
+    It will not be returned in parsing results.
+    """
+
+    content: str
+    """String contents."""
+
+    def __hash__(self, /) -> int:
+        return id(self)
 
 
 class LsclSelector(BaseModel):
