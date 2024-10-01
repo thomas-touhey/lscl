@@ -124,11 +124,22 @@ def _render_lscl_string(raw: str, /, *, use_barewords: bool = False) -> str:
     if use_barewords and _BAREWORD_PATTERN.fullmatch(raw):
         return raw
 
+    replacements = _STRING_ESCAPE_REPLACEMENTS.copy()
+    if '"' not in raw:
+        delimiter = '"'
+        replacements["'"] = "'"
+    elif "'" not in raw:
+        delimiter = "'"
+        replacements['"'] = '"'
+    else:
+        delimiter = '"'
+        replacements["'"] = "'"
+
     raw = _STRING_ESCAPE_PATTERN.sub(
-        lambda match: _STRING_ESCAPE_REPLACEMENTS[match[0]],
+        lambda match: replacements[match[0]],
         raw,
     )
-    return '"' + raw + '"'
+    return delimiter + raw + delimiter
 
 
 def _render_lscl_pattern(raw: re.Pattern, /) -> str:

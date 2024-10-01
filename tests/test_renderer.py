@@ -188,6 +188,18 @@ from lscl.renderer import LsclRenderable, render_as_lscl
             [1, 2, 3],
             "[\n  1,\n  2,\n  3\n]\n",
         ),
+        (
+            'string with "double quotes"',
+            "'string with \"double quotes\"'\n",
+        ),
+        (
+            "string with 'single quotes'",
+            "\"string with 'single quotes'\"\n",
+        ),
+        (
+            "string with 'single' and \"double\" quotes",
+            '"string with \'single\' and \\"double\\" quotes"\n',
+        ),
     ),
 )
 def test_render(raw: LsclRenderable, expected: str) -> None:
