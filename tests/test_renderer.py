@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import pytest
 
+from lscl.errors import SelectorElementRenderingError, StringRenderingError
 from lscl.lang import (
     LsclAnd,
     LsclAttribute,
@@ -186,6 +187,10 @@ from lscl.renderer import LsclRenderable, render_as_lscl
             "[1][2]",
         ),
         (
+            LsclSelector(names=["[%%01%]", "hello, world"]),
+            "[%5B%%2501%%5D][hello%2C world]",
+        ),
+        (
             [1, 2, 3],
             "[\n  1,\n  2,\n  3\n]\n",
         ),
@@ -258,7 +263,90 @@ from lscl.renderer import LsclRenderable, render_as_lscl
 )
 def test_render(raw: LsclRenderable, expected: str) -> None:
     """Check the renderer works correctly."""
-    assert render_as_lscl(raw) == expected
+    assert (
+        render_as_lscl(
+            raw,
+            escapes_supported=True,
+            field_reference_escape_style="percent",
+        )
+        == expected
+    )
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    (
+        ("without special chars", '"without special chars"\n'),
+        ('with "double quotes"!', "'with \"double quotes\"!'\n"),
+        ("with \\n, fake newlines!", '"with \\n, fake newlines!"\n'),
+    ),
+)
+def test_render_string_without_escapes(
+    raw: LsclRenderable,
+    expected: str,
+) -> None:
+    """Check the renderer works correctly without escapes."""
+    assert render_as_lscl(raw, escapes_supported=False) == expected
+
+
+@pytest.mark.parametrize(
+    "raw",
+    (
+        "with '\"two types\"' of quotes",
+        "with \0, an unrenderable character",
+        'with \0, an unrenderable character, and "double quotes"',
+    ),
+)
+def test_render_unrenderable_string_without_escapes(
+    raw: LsclRenderable,
+) -> None:
+    """Check if :py:exc:`StringRenderingError` gets raised correctly."""
+    with pytest.raises(StringRenderingError) as exc_info:
+        render_as_lscl(raw, escapes_supported=False)
+
+    assert exc_info.value.string == raw
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    (
+        (
+            LsclSelector(names=("a&[", "]b&#24;&")),
+            "[a&&#91;][&#93;b&#38;#24;&]",
+        ),
+        (LsclSelector(names=("x", ",")), "[x][&#44;]"),
+    ),
+)
+def test_render_selector_with_ampersand_escaping(
+    raw: LsclRenderable,
+    expected: str,
+) -> None:
+    """Check that rendering selectors with forbidden characters works."""
+    assert (
+        render_as_lscl(
+            raw,
+            field_reference_escape_style="ampersand",
+        )
+        == expected
+    )
+
+
+@pytest.mark.parametrize(
+    "raw,selector_element",
+    (
+        (LsclSelector(names=("[", "x")), "["),
+        (LsclSelector(names=("y)", "b]c")), "b]c"),
+    ),
+)
+def test_render_unrenderable_selector_without_escapes(
+    raw: LsclRenderable,
+    selector_element: str,
+) -> None:
+    """Check if :py:exc:`SelectorElementRenderingError` is raised."""
+    with pytest.raises(SelectorElementRenderingError) as exc_info:
+        render_as_lscl(raw, field_reference_escape_style="none")
+
+    assert exc_info.value.selector_element == selector_element
 
 
 def test_render_unknown_type() -> None:

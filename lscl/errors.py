@@ -34,12 +34,16 @@ from __future__ import annotations
 class Error(ValueError):
     """An error has occurred in an lscl function."""
 
-    def __init__(self, message: str, /) -> None:
-        super().__init__(message)
+    __slots__ = ()
+
+    def __init__(self, message: str | None = None, /) -> None:
+        super().__init__(message or "")
 
 
 class DecodeError(Error):
     """An error has occurred while decoding something."""
+
+    __slots__ = ("line", "column", "offset")
 
     line: int
     """Line number, counting from 1."""
@@ -67,3 +71,34 @@ class DecodeError(Error):
         self.line = line
         self.column = column
         self.offset = offset
+
+
+class StringRenderingError(Error):
+    """An error has occurred while rendering a string."""
+
+    __slots__ = ("string",)
+
+    string: str
+    """String that could not be rendered."""
+
+    def __init__(self, /, *, string: str) -> None:
+        super().__init__(
+            f"The following string could not be rendered: {string!r}",
+        )
+        self.string = string
+
+
+class SelectorElementRenderingError(Error):
+    """An error has occurred while rendering a selector element."""
+
+    __slots__ = ("selector_element",)
+
+    selector_element: str
+    """Selector element that could not be rendered."""
+
+    def __init__(self, /, *, selector_element: str) -> None:
+        super().__init__(
+            "The following selector could not be rendered: "
+            + f"{selector_element!r}",
+        )
+        self.selector_element = selector_element

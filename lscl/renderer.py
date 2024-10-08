@@ -32,11 +32,12 @@ from __future__ import annotations
 
 from decimal import Decimal
 import re
-from typing import Union
+from typing import Literal, Union
 
 from pydantic import BaseModel, TypeAdapter
 from typing_extensions import TypeAliasType
 
+from .errors import SelectorElementRenderingError, StringRenderingError
 from .lang import (
     LsclAnd,
     LsclAttribute,
@@ -85,19 +86,50 @@ _BAREWORD_PATTERN = re.compile(r"[A-Za-z_][A-Za-z0-9_]+")
 _STRING_ESCAPE_PATTERN = re.compile(r"[\\\\\"'\0\n\r\t]")
 """Pattern to match sequences to escape."""
 
-_STRING_ESCAPE_REPLACEMENTS = {
+_PATTERN_ESCAPE_PATTERN = re.compile(r"[/]")
+"""Pattern to match sequences to escape in patterns."""
+
+_BASE_STRING_ESCAPE_DISABLED_REPLACEMENTS = {
+    "\\": "\\",
+    "\n": "\n",
+    "\t": "\t",
+}
+"""Replacements to use when string escapes are disabled."""
+
+_DOUBLE_QUOTE_STRING_ESCAPE_DISABLED_REPLACEMENTS = {
+    **_BASE_STRING_ESCAPE_DISABLED_REPLACEMENTS,
+    "'": "'",
+}
+"""Replacements for chars to escape when double string escaping is disabled."""
+
+_SINGLE_QUOTE_STRING_ESCAPE_DISABLED_REPLACEMENTS = {
+    **_BASE_STRING_ESCAPE_DISABLED_REPLACEMENTS,
+    '"': '"',
+}
+"""Replacements for chars to escape when single string escaping is disabled."""
+
+_BASE_STRING_ESCAPE_REPLACEMENTS = {
     "\\": "\\\\",
-    '"': '\\"',
-    "'": "\\'",
     "\0": "\\0",
     "\n": "\\n",
     "\r": "\\r",
     "\t": "\\t",
+    '"': '"',
+    "'": "'",
 }
-"""Replacements for escape sequences."""
+"""Replacements for escape sequences in all strings."""
 
-_PATTERN_ESCAPE_PATTERN = re.compile(r"[/]")
-"""Pattern to match sequences to escape in patterns."""
+_DOUBLE_QUOTE_STRING_ESCAPE_REPLACEMENTS = {
+    **_BASE_STRING_ESCAPE_REPLACEMENTS,
+    '"': '\\"',
+}
+"""Replacements for escape sequences in double quote strings."""
+
+_SINGLE_QUOTE_STRING_ESCAPE_REPLACEMENTS = {
+    **_BASE_STRING_ESCAPE_REPLACEMENTS,
+    "'": "\\'",
+}
+"""Replacements for escape sequences in single quote strings."""
 
 
 class _LsclContentMatcher(BaseModel):
@@ -116,37 +148,66 @@ _lscl_list_type_adapter = TypeAdapter(_LsclContentMatcher | _LsclListMatcher)
 # ---
 
 
-def _render_lscl_string(raw: str, /, *, use_barewords: bool = False) -> str:
+class _LsclRenderingOptions(BaseModel):
+    """Renderer options for LSCL."""
+
+    escapes_supported: bool
+    """Whether escapes are supported."""
+
+    field_reference_escape_style: Literal["percent", "ampersand", "none"]
+    """Escape style of field references."""
+
+
+def _render_lscl_string(
+    raw: str,
+    /,
+    *,
+    options: _LsclRenderingOptions,
+    use_barewords: bool = False,
+) -> str:
     """Render an LSCL string for any context.
 
     :param raw: Raw string to render.
+    :param options: Rendering options.
     :return: Rendered string.
     """
     if use_barewords and _BAREWORD_PATTERN.fullmatch(raw):
         return raw
 
-    replacements = _STRING_ESCAPE_REPLACEMENTS.copy()
-    if '"' not in raw:
+    if '"' not in raw or "'" in raw:
         delimiter = '"'
-        replacements["'"] = "'"
-    elif "'" not in raw:
-        delimiter = "'"
-        replacements['"'] = '"'
+        if options.escapes_supported:
+            replacements = _DOUBLE_QUOTE_STRING_ESCAPE_REPLACEMENTS
+        else:
+            replacements = _DOUBLE_QUOTE_STRING_ESCAPE_DISABLED_REPLACEMENTS
     else:
-        delimiter = '"'
-        replacements["'"] = "'"
+        delimiter = "'"
+        if options.escapes_supported:
+            replacements = _SINGLE_QUOTE_STRING_ESCAPE_REPLACEMENTS
+        else:
+            replacements = _SINGLE_QUOTE_STRING_ESCAPE_DISABLED_REPLACEMENTS
 
-    raw = _STRING_ESCAPE_PATTERN.sub(
-        lambda match: replacements[match[0]],
-        raw,
-    )
+    def repl(m: re.Match, /) -> str:
+        """Replace the provided match with the corresponding escape code."""
+        try:
+            return replacements[m[0]]
+        except KeyError:
+            raise StringRenderingError(string=raw)
+
+    raw = _STRING_ESCAPE_PATTERN.sub(repl, raw)
     return delimiter + raw + delimiter
 
 
-def _render_lscl_pattern(raw: re.Pattern, /) -> str:
+def _render_lscl_pattern(
+    raw: re.Pattern,
+    /,
+    *,
+    options: _LsclRenderingOptions,
+) -> str:
     """Render an LSCL string as a pattern.
 
     :param raw: Raw string to render.
+    :param options: Rendering options.
     :return: Rendered string.
     """
     escaped = _PATTERN_ESCAPE_PATTERN.sub(
@@ -156,13 +217,20 @@ def _render_lscl_pattern(raw: re.Pattern, /) -> str:
     return f"/{escaped}/"
 
 
-def _render_lscl_data(content: LsclData, /, *, prefix: str) -> str:
+def _render_lscl_data(
+    content: LsclData,
+    /,
+    *,
+    options: _LsclRenderingOptions,
+    prefix: str,
+) -> str:
     """Render LSCL data.
 
     This function considers that the beginning is already indented correctly,
     and always adds a newline at the end.
 
     :param content: Content to render.
+    :param options: Rendering options.
     :param prefix: Prefix to render with.
     :return: Rendered content.
     """
@@ -178,14 +246,22 @@ def _render_lscl_data(content: LsclData, /, *, prefix: str) -> str:
             if isinstance(key, LsclLiteral):
                 rendered_key = key.content
             else:
-                rendered_key = _render_lscl_string(key, use_barewords=True)
+                rendered_key = _render_lscl_string(
+                    key,
+                    options=options,
+                    use_barewords=True,
+                )
 
             rendered += (
                 prefix
                 + "  "
                 + rendered_key
                 + " => "
-                + _render_lscl_data(value, prefix=prefix + "  ")
+                + _render_lscl_data(
+                    value,
+                    options=options,
+                    prefix=prefix + "  ",
+                )
             )
 
         return rendered + prefix + "}\n"
@@ -197,7 +273,13 @@ def _render_lscl_data(content: LsclData, /, *, prefix: str) -> str:
         rendered = "[\n"
         for i, value in enumerate(content):
             rendered += (
-                prefix + "  " + _render_lscl_data(value, prefix=prefix + "  ")
+                prefix
+                + "  "
+                + _render_lscl_data(
+                    value,
+                    options=options,
+                    prefix=prefix + "  ",
+                )
             )
             if i < len(content) - 1:
                 rendered = rendered[:-1] + ",\n"
@@ -211,44 +293,134 @@ def _render_lscl_data(content: LsclData, /, *, prefix: str) -> str:
         return str(content) + "\n"
 
     if isinstance(content, str):
-        return _render_lscl_string(content, use_barewords=True) + "\n"
+        return (
+            _render_lscl_string(content, options=options, use_barewords=True)
+            + "\n"
+        )
 
     raise NotImplementedError()  # pragma: no cover
 
 
-def _render_lscl_selector(content: LsclSelector, /) -> str:
+_PERCENT_ENCODING_PATTERN = re.compile(r"%([0-9A-F]{2})")
+"""Pattern to use to find percent signs that require percent-encoding.
+
+This is done because '%' not followed by two uppercase hexadecimal digits
+are **not** unescaped, hence there is no need to percent-encode them.
+
+See `PERCENT EscapeHandler`_ for more information.
+
+.. _PERCENT EscapeHandler:
+    https://github.com/elastic/logstash/blob/
+    3480c32b6ee64f5b1193f5c3b4f0f722731c0fda/logstash-core/src/main/java/org/
+    logstash/util/EscapeHandler.java#L26
+"""
+
+_AMPERSAND_ENCODING_PATTERN = re.compile(r"&#([0-9]{2,});")
+"""Pattern to use to find ampersands that require ampersand-encoding.
+
+This is done because '&' that do not introduce valid ampersand patterns
+are **not** unescaped, hence there is no need to ampersand-encode them.
+
+.. _AMPERSAND EscapeHandler:
+    https://github.com/elastic/logstash/blob/
+    3480c32b6ee64f5b1193f5c3b4f0f722731c0fda/logstash-core/src/main/java/org/
+    logstash/util/EscapeHandler.java#L53
+"""
+
+
+def _render_lscl_selector_element(
+    element: str,
+    /,
+    *,
+    options: _LsclRenderingOptions,
+) -> str:
+    """Render an LSCL selector element.
+
+    :param content: Content to render.
+    :param options: Rendering options.
+    :return: Rendered selector.
+    """
+    if options.field_reference_escape_style == "none":
+        if "[" in element or "]" in element or "," in element:
+            raise SelectorElementRenderingError(selector_element=element)
+    elif options.field_reference_escape_style == "percent":
+        # NOTE: As opposed to Logstash's percent escape function, we
+        #       also escape commas.
+        element = (
+            _PERCENT_ENCODING_PATTERN.sub(r"%25\1", element)
+            .replace("[", "%5B")
+            .replace("]", "%5D")
+            .replace(",", "%2C")
+        )
+    elif options.field_reference_escape_style == "ampersand":
+        # NOTE: As opposed to Logstash's ampersand escape function, we
+        #       also escape commas.
+        element = (
+            _AMPERSAND_ENCODING_PATTERN.sub(r"&#38;#\1;", element)
+            .replace("[", "&#91;")
+            .replace("]", "&#93;")
+            .replace(",", "&#44;")
+        )
+    else:  # pragma: no cover
+        raise NotImplementedError()
+
+    return f"[{element}]"
+
+
+def _render_lscl_selector(
+    content: LsclSelector,
+    /,
+    *,
+    options: _LsclRenderingOptions,
+) -> str:
     """Render an LSCL selector.
 
     :param content: Content to render.
+    :param options: Rendering options.
     :return: Rendered selector.
     """
-    return "".join(f"[{name}]" for name in content.names)
+    return "".join(
+        _render_lscl_selector_element(name, options=options)
+        for name in content.names
+    )
 
 
-def _render_lscl_rvalue(content: LsclRValue, /, *, prefix: str) -> str:
+def _render_lscl_rvalue(
+    content: LsclRValue,
+    /,
+    *,
+    options: _LsclRenderingOptions,
+    prefix: str,
+) -> str:
     """Render an LSCL right-value.
 
     :param content: Content to render.
+    :param options: Rendering options.
+    :param prefix: Prefix to render with.
     :return: Rendered right-value.
     """
     if isinstance(content, (list, LsclLiteral)):
-        return _render_lscl_data(content, prefix=prefix)[:-1]
+        return _render_lscl_data(content, options=options, prefix=prefix)[:-1]
 
     if isinstance(content, LsclSelector):
-        return _render_lscl_selector(content)
+        return _render_lscl_selector(content, options=options)
 
     if isinstance(content, LsclMethodCall):
         return (
             f"{content.name}("
             + ", ".join(
-                _render_lscl_rvalue(param, prefix=prefix)
+                _render_lscl_rvalue(param, options=options, prefix=prefix)
                 for param in content.params
             )
             + ")"
         )
 
     if isinstance(content, str):
-        return _render_lscl_string(content)  # No barewords allowed here!
+        return _render_lscl_string(
+            content,
+            options=options,
+            use_barewords=False,
+        )
 
     if isinstance(content, (int, bool, float, Decimal)):
         return str(content)
@@ -256,16 +428,27 @@ def _render_lscl_rvalue(content: LsclRValue, /, *, prefix: str) -> str:
     raise NotImplementedError()  # pragma: no cover
 
 
-def _render_lscl_condition(content: LsclCondition, /, *, prefix: str) -> str:
+def _render_lscl_condition(
+    content: LsclCondition,
+    /,
+    *,
+    options: _LsclRenderingOptions,
+    prefix: str,
+) -> str:
     """Render an LSCL condition.
 
     :param content: Condition to render.
+    :param options: Rendering options.
     :param prefix: Prefix.
     :return: Rendered condition.
     """
     if isinstance(content, (LsclAnd, LsclOr, LsclXor, LsclNand)):
         if len(content.conditions) == 1:
-            return _render_lscl_condition(content.conditions[0], prefix=prefix)
+            return _render_lscl_condition(
+                content.conditions[0],
+                options=options,
+                prefix=prefix,
+            )
 
         if isinstance(content, LsclAnd):
             op = " and "
@@ -278,7 +461,11 @@ def _render_lscl_condition(content: LsclCondition, /, *, prefix: str) -> str:
 
         rendered_conditions: list[str] = []
         for cond in content.conditions:
-            rendered = _render_lscl_condition(cond, prefix=prefix)
+            rendered = _render_lscl_condition(
+                cond,
+                options=options,
+                prefix=prefix,
+            )
             if isinstance(cond, (LsclAnd, LsclOr, LsclXor, LsclNand)):
                 rendered = f"({rendered})"
 
@@ -287,83 +474,129 @@ def _render_lscl_condition(content: LsclCondition, /, *, prefix: str) -> str:
         result = op.join(rendered_conditions)
     elif isinstance(content, LsclNot):
         if isinstance(content.condition, LsclSelector):
-            result = "!" + _render_lscl_selector(content.condition)
+            result = "!" + _render_lscl_selector(
+                content.condition,
+                options=options,
+            )
         else:
             result = (
                 "!("
-                + _render_lscl_condition(content.condition, prefix=prefix)
+                + _render_lscl_condition(
+                    content.condition,
+                    options=options,
+                    prefix=prefix,
+                )
                 + ")"
             )
     elif isinstance(content, LsclIn):
         result = (
-            _render_lscl_rvalue(content.needle, prefix=prefix)
+            _render_lscl_rvalue(content.needle, options=options, prefix=prefix)
             + " in "
-            + _render_lscl_rvalue(content.haystack, prefix=prefix)
+            + _render_lscl_rvalue(
+                content.haystack,
+                options=options,
+                prefix=prefix,
+            )
         )
     elif isinstance(content, LsclNotIn):
         result = (
-            _render_lscl_rvalue(content.needle, prefix=prefix)
+            _render_lscl_rvalue(content.needle, options=options, prefix=prefix)
             + " not in "
-            + _render_lscl_rvalue(content.haystack, prefix=prefix)
+            + _render_lscl_rvalue(
+                content.haystack,
+                options=options,
+                prefix=prefix,
+            )
         )
     elif isinstance(content, LsclEqualTo):
         result = (
-            _render_lscl_rvalue(content.first, prefix=prefix)
+            _render_lscl_rvalue(content.first, options=options, prefix=prefix)
             + " == "
-            + _render_lscl_rvalue(content.second, prefix=prefix)
+            + _render_lscl_rvalue(
+                content.second,
+                options=options,
+                prefix=prefix,
+            )
         )
     elif isinstance(content, LsclNotEqualTo):
         result = (
-            _render_lscl_rvalue(content.first, prefix=prefix)
+            _render_lscl_rvalue(content.first, options=options, prefix=prefix)
             + " != "
-            + _render_lscl_rvalue(content.second, prefix=prefix)
+            + _render_lscl_rvalue(
+                content.second,
+                options=options,
+                prefix=prefix,
+            )
         )
     elif isinstance(content, LsclGreaterThanOrEqualTo):
         result = (
-            _render_lscl_rvalue(content.first, prefix=prefix)
+            _render_lscl_rvalue(content.first, options=options, prefix=prefix)
             + " >= "
-            + _render_lscl_rvalue(content.second, prefix=prefix)
+            + _render_lscl_rvalue(
+                content.second,
+                options=options,
+                prefix=prefix,
+            )
         )
     elif isinstance(content, LsclLessThanOrEqualTo):
         result = (
-            _render_lscl_rvalue(content.first, prefix=prefix)
+            _render_lscl_rvalue(content.first, options=options, prefix=prefix)
             + " <= "
-            + _render_lscl_rvalue(content.second, prefix=prefix)
+            + _render_lscl_rvalue(
+                content.second,
+                options=options,
+                prefix=prefix,
+            )
         )
     elif isinstance(content, LsclGreaterThan):
         result = (
-            _render_lscl_rvalue(content.first, prefix=prefix)
+            _render_lscl_rvalue(content.first, options=options, prefix=prefix)
             + " > "
-            + _render_lscl_rvalue(content.second, prefix=prefix)
+            + _render_lscl_rvalue(
+                content.second,
+                options=options,
+                prefix=prefix,
+            )
         )
     elif isinstance(content, LsclLessThan):
         result = (
-            _render_lscl_rvalue(content.first, prefix=prefix)
+            _render_lscl_rvalue(content.first, options=options, prefix=prefix)
             + " < "
-            + _render_lscl_rvalue(content.second, prefix=prefix)
+            + _render_lscl_rvalue(
+                content.second,
+                options=options,
+                prefix=prefix,
+            )
         )
     elif isinstance(content, LsclMatch):
         result = (
-            _render_lscl_rvalue(content.value, prefix=prefix)
+            _render_lscl_rvalue(content.value, options=options, prefix=prefix)
             + " =~ "
-            + _render_lscl_pattern(content.pattern)
+            + _render_lscl_pattern(content.pattern, options=options)
         )
     elif isinstance(content, LsclNotMatch):
         result = (
-            _render_lscl_rvalue(content.value, prefix=prefix)
+            _render_lscl_rvalue(content.value, options=options, prefix=prefix)
             + " !~ "
-            + _render_lscl_pattern(content.pattern)
+            + _render_lscl_pattern(content.pattern, options=options)
         )
     else:
-        result = _render_lscl_rvalue(content, prefix=prefix)
+        result = _render_lscl_rvalue(content, options=options, prefix=prefix)
 
     return result
 
 
-def _render_lscl_content(content: LsclContent, /, *, prefix: str) -> str:
+def _render_lscl_content(
+    content: LsclContent,
+    /,
+    *,
+    options: _LsclRenderingOptions,
+    prefix: str,
+) -> str:
     """Render LSCL content.
 
     :param content: Content to render.
+    :param options: Rendering options.
     :param prefix: Prefix to render with.
     :return: Rendered content.
     """
@@ -375,6 +608,7 @@ def _render_lscl_content(content: LsclContent, /, *, prefix: str) -> str:
                     f"{prefix}{element.name} {'{'}\n"
                     + _render_lscl_content(
                         element.content,
+                        options=options,
                         prefix=prefix + "  ",
                     )
                     + f"{prefix}{'}'}\n"
@@ -384,6 +618,7 @@ def _render_lscl_content(content: LsclContent, /, *, prefix: str) -> str:
         elif isinstance(element, LsclAttribute):
             rendered += f"{prefix}{element.name} => " + _render_lscl_data(
                 element.content,
+                options=options,
                 prefix=prefix,
             )
         else:
@@ -392,13 +627,18 @@ def _render_lscl_content(content: LsclContent, /, *, prefix: str) -> str:
             for cond, body in element.conditions:
                 rendered += f"{before_cond}if " + _render_lscl_condition(
                     cond,
+                    options=options,
                     prefix=prefix,
                 )
 
                 if body:
                     rendered += (
                         " {\n"
-                        + _render_lscl_content(body, prefix=prefix + "  ")
+                        + _render_lscl_content(
+                            body,
+                            options=options,
+                            prefix=prefix + "  ",
+                        )
                         + prefix
                         + "}"
                     )
@@ -414,6 +654,7 @@ def _render_lscl_content(content: LsclContent, /, *, prefix: str) -> str:
                         + "{\n"
                         + _render_lscl_content(
                             element.default,
+                            options=options,
                             prefix=prefix + "  ",
                         )
                         + prefix
@@ -427,17 +668,41 @@ def _render_lscl_content(content: LsclContent, /, *, prefix: str) -> str:
     return rendered
 
 
-def render_as_lscl(content: LsclRenderable, /) -> str:
+def render_as_lscl(
+    content: LsclRenderable,
+    /,
+    *,
+    escapes_supported: bool = False,
+    field_reference_escape_style: Literal[
+        "percent",
+        "ampersand",
+        "none",
+    ] = "none",
+) -> str:
     """Render content as LSCL.
 
     :param content: Content to render as LSCL.
+    :param escapes_supported: Whether ``config.support_escapes`` is defined
+        as true in the configuration of the target environment.
+    :param field_reference_escape_style: The
+        ``config.field_reference.escape_style`` value in the configuration
+        of the target environment.
     :return: Rendered content.
+    :raises StringRenderingError: A string could not be rendered due to
+        invalid characters being present.
+    :raises SelectorElementRenderingError: A selector could not be rendered
+        due to invalid characters being in one of its elements.
     """
+    options = _LsclRenderingOptions(
+        escapes_supported=escapes_supported,
+        field_reference_escape_style=field_reference_escape_style,
+    )
+
     if isinstance(content, (str, bool, int, float, Decimal, LsclLiteral)):
-        return _render_lscl_data(content, prefix="")
+        return _render_lscl_data(content, options=options, prefix="")
 
     if isinstance(content, (LsclSelector, LsclMethodCall)):
-        return _render_lscl_rvalue(content, prefix="")
+        return _render_lscl_rvalue(content, options=options, prefix="")
 
     if isinstance(
         content,
@@ -459,10 +724,10 @@ def render_as_lscl(content: LsclRenderable, /) -> str:
             LsclNotMatch,
         ),
     ):
-        return _render_lscl_condition(content, prefix="")
+        return _render_lscl_condition(content, options=options, prefix="")
 
     if isinstance(content, (LsclBlock, LsclAttribute, LsclConditions)):
-        return _render_lscl_content([content], prefix="")
+        return _render_lscl_content([content], options=options, prefix="")
 
     # We can either have an LsclContent, an list[LsclData], or something
     # else we don't manage here, e.g. some weird mix of both.
@@ -475,6 +740,6 @@ def render_as_lscl(content: LsclRenderable, /) -> str:
         ) from exc
 
     if isinstance(result, _LsclContentMatcher):
-        return _render_lscl_content(result.value, prefix="")
+        return _render_lscl_content(result.value, options=options, prefix="")
 
-    return _render_lscl_data(result.value, prefix="")
+    return _render_lscl_data(result.value, options=options, prefix="")

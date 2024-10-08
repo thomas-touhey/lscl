@@ -30,7 +30,7 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Union
+from typing import Annotated, Literal, Union
 
 from annotated_types import Len
 from pydantic import BaseModel
@@ -248,10 +248,33 @@ def _render_as_lscl_content(filters: LogstashFilters, /) -> LsclContent:
     return content
 
 
-def render_logstash_filters(filters: LogstashFilters, /) -> str:
+def render_logstash_filters(
+    filters: LogstashFilters,
+    /,
+    *,
+    escapes_supported: bool = False,
+    field_reference_escape_style: Literal[
+        "percent",
+        "ampersand",
+        "none",
+    ] = "none",
+) -> str:
     """Render Logstash filters.
 
     :param filters: Logstash filters or branching.
+    :param escapes_supported: Whether ``config.support_escapes`` is defined
+        as true in the configuration of the target environment.
+    :param field_reference_escape_style: The
+        ``config.field_reference.escape_style`` value in the configuration
+        of the target environment.
     :return: Filters encoded using LSCL.
+    :raises StringRenderingError: A string could not be rendered due to
+        invalid characters being present.
+    :raises SelectorElementRenderingError: A selector could not be rendered
+        due to invalid characters being in one of its elements.
     """
-    return render_as_lscl(_render_as_lscl_content(filters))
+    return render_as_lscl(
+        _render_as_lscl_content(filters),
+        escapes_supported=escapes_supported,
+        field_reference_escape_style=field_reference_escape_style,
+    )

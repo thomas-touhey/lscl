@@ -115,7 +115,7 @@ class LsclSelector(BaseModel):
     """Selector for evaluating a variable within a condition."""
 
     names: Annotated[
-        list[Annotated[str, StringConstraints(pattern=r"^[^\[\]\,]+$")]],
+        list[Annotated[str, StringConstraints(min_length=1)]],
         Len(min_length=1),
     ]
     """Name of the variable to evaluate."""
