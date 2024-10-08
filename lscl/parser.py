@@ -40,7 +40,7 @@ the original language without adding too much.
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from decimal import Decimal
 from enum import Enum
 from itertools import chain
@@ -133,9 +133,6 @@ _LSCL_NUMBER_PATTERN = re.compile(r"-?[0-9]+(?:\.[0-9]*)?")
 
 _LSCL_BAREWORD_PATTERN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 """Bareword pattern."""
-
-_LSCL_ESCAPE_PATTERN = re.compile(r"\\(.)")
-"""Pattern used to unescape quoted strings."""
 
 
 class LsclTokenType(str, Enum):
@@ -368,49 +365,6 @@ _LSCL_SIMPLE_TOKEN_MAPPING: dict[str, LsclSimpleTokenType] = {
 }
 """Mapping from symbols and keywords to simple token types."""
 
-_LSCL_ESCAPE_CHARACTERS = {
-    '"': '"',
-    "'": "'",
-    "\\": "\\",
-    "n": "\n",
-    "r": "\r",
-    "t": "\t",
-    "0": "\0",
-}
-"""Valid characters for escape sequences.
-
-See `string_escape`_ for the source of these characters.
-
-.. _string_escape:
-    https://github.com/elastic/logstash/blob/
-    948a0edf1a58583d761f254d7e327ae02d18bc40/logstash-core/lib/
-    logstash/config/string_escape.rb
-"""
-
-
-def _unescape_lscl_string(escaped_string: str, /) -> str:
-    """Unescape an LSCL string.
-
-    :param escaped_string: String with escape sequences.
-    :return: Unescaped string.
-    """
-    return _LSCL_ESCAPE_PATTERN.sub(
-        lambda match: _LSCL_ESCAPE_CHARACTERS.get(match[1], match[0]),
-        escaped_string,
-    )
-
-
-def _unescape_lscl_pattern(escaped_pattern: str, /) -> str:
-    """Unescape an LSCL pattern.
-
-    :param escaped_pattern: Pattern with escape sequences.
-    :return: Unescaped pattern.
-    """
-    return _LSCL_ESCAPE_PATTERN.sub(
-        lambda m: "/" if m[1] == "/" else m[0],
-        escaped_pattern,
-    )
-
 
 def parse_lscl_tokens(
     raw: str,
@@ -486,7 +440,7 @@ def parse_lscl_tokens(
             # Case 4. Double quoted string.
             yield LsclStringToken(
                 type=LsclTokenType.DQUOT,
-                value=_unescape_lscl_string(match[4]),
+                value=match[4],
                 line=runk.line,
                 column=runk.column,
                 offset=runk.offset,
@@ -495,7 +449,7 @@ def parse_lscl_tokens(
             # Case 5. Single quoted string.
             yield LsclStringToken(
                 type=LsclTokenType.SQUOT,
-                value=_unescape_lscl_string(match[5]),
+                value=match[5],
                 line=runk.line,
                 column=runk.column,
                 offset=runk.offset,
@@ -504,7 +458,7 @@ def parse_lscl_tokens(
             # Case 6. Pattern.
             yield LsclStringToken(
                 type=LsclTokenType.PATTERN,
-                value=_unescape_lscl_pattern(match[6]),
+                value=match[6],
                 line=runk.line,
                 column=runk.column,
                 offset=runk.offset,
@@ -568,6 +522,38 @@ def parse_lscl_tokens(
 # Parser.
 # ---
 
+_LSCL_STRING_ESCAPE_PATTERN = re.compile(r"\\(.)")
+"""Pattern used to unescape quoted strings."""
+
+_LSCL_STRING_ESCAPE_CHARACTERS = {
+    '"': '"',
+    "'": "'",
+    "\\": "\\",
+    "n": "\n",
+    "r": "\r",
+    "t": "\t",
+    "0": "\0",
+}
+"""Valid characters for escape sequences.
+
+This definition, along with :py:func:`_unescape_lscl_string`, is in the parser
+rather than in the lexer, because escaping support can be disabled in the
+parser configuration, just as in Logstash.
+
+See `string_escape`_ for the source of these characters.
+
+.. _string_escape:
+    https://github.com/elastic/logstash/blob/
+    948a0edf1a58583d761f254d7e327ae02d18bc40/logstash-core/lib/
+    logstash/config/string_escape.rb
+"""
+
+_LSCL_PERCENT_SEQUENCE_PATTERN = re.compile(r"%([0-9A-F]{2})")
+"""Pattern used to unescape percent-encoded sequences."""
+
+_LSCL_AMPERSAND_SEQUENCE_PATTERN = re.compile(r"&#([0-9]{2,});")
+"""Pattern used to unescape ampersand-encoded sequences."""
+
 
 class _LsclParsingOptions(BaseModel):
     """Parsing options for LSCL."""
@@ -579,6 +565,16 @@ class _LsclParsingOptions(BaseModel):
     method calls. Logstash does not support those by default, but this
     option can be used to make our parser more fault-tolerant.
     """
+
+    support_escapes: bool
+    """Whether to unescape double and single quoted strings."""
+
+    field_reference_escape_style: Literal[
+        "percent",
+        "ampersand",
+        "none",
+    ]
+    """Escaping to expect from selector elements."""
 
 
 class UnexpectedLsclToken(DecodeError):
@@ -598,6 +594,67 @@ class UnexpectedLsclToken(DecodeError):
         self.token = token
 
 
+def _parse_lscl_string(
+    token: LsclStringToken,
+    /,
+    *,
+    options: _LsclParsingOptions,
+) -> str:
+    """Unescape a string using the specific escaping options.
+
+    :param token: DQUOT or SQUOT token to parse the string from.
+    :param options: Parsing options, including escaping options for
+        strings.
+    :return: Obtained string.
+    """
+    if not options.support_escapes:
+        return token.value
+
+    return _LSCL_STRING_ESCAPE_PATTERN.sub(
+        lambda match: _LSCL_STRING_ESCAPE_CHARACTERS.get(match[1], match[0]),
+        token.value,
+    )
+
+
+def _parse_lscl_selector(
+    tokens: Sequence[LsclStringToken],
+    /,
+    *,
+    options: _LsclParsingOptions,
+) -> LsclSelector:
+    """Parse a selector using the specific escaping options.
+
+    :param tokens: Tokens of SELECTOR_ELEMENT type to produce the selector
+        from.
+    :param options: Parsing options, including escaping options for
+        selectors.
+    :return: Obtained selector.
+    """
+    if options.field_reference_escape_style == "percent":
+        return LsclSelector(
+            names=[
+                _LSCL_PERCENT_SEQUENCE_PATTERN.sub(
+                    lambda m: chr(int(m[1], 16)),
+                    token.value,
+                )
+                for token in tokens
+            ],
+        )
+
+    if options.field_reference_escape_style == "ampersand":
+        return LsclSelector(
+            names=[
+                _LSCL_AMPERSAND_SEQUENCE_PATTERN.sub(
+                    lambda m: chr(int(m[1])),
+                    token.value,
+                )
+                for token in tokens
+            ],
+        )
+
+    return LsclSelector(names=[token.value for token in tokens])
+
+
 def _parse_lscl_data(
     token_iter: Iterator[LsclToken],
     /,
@@ -615,13 +672,11 @@ def _parse_lscl_data(
     # TODO: We don't support plugins yet, as named blocks. Maybe it should
     # be supported? Not sure...
     token = next(token_iter)
-    if token.type in (
-        LsclTokenType.BAREWORD,
-        LsclTokenType.SQUOT,
-        LsclTokenType.DQUOT,
-        LsclTokenType.NUMBER,
-    ):
+    if token.type in (LsclTokenType.BAREWORD, LsclTokenType.NUMBER):
         return token.value
+
+    if token.type in (LsclTokenType.SQUOT, LsclTokenType.DQUOT):
+        return _parse_lscl_string(token, options=options)
 
     if token.type == LsclTokenType.SELECTOR_ELEMENT:
         # The element is a single-element list matched as a selector.
@@ -720,23 +775,21 @@ def _parse_lscl_rvalue(
     :return: Parsed condition, and first token after the condition.
     """
     token = next(token_iter)
-    if token.type in (
-        LsclTokenType.SQUOT,
-        LsclTokenType.DQUOT,
-        LsclTokenType.PATTERN,
-        LsclTokenType.NUMBER,
-    ):
+    if token.type in (LsclTokenType.PATTERN, LsclTokenType.NUMBER):
         return token.value, next(token_iter)
 
+    if token.type in (LsclTokenType.SQUOT, LsclTokenType.DQUOT):
+        return _parse_lscl_string(token, options=options), next(token_iter)
+
     if token.type == LsclTokenType.SELECTOR_ELEMENT:
-        selectors = [token.value]
+        selector_tokens: list[LsclStringToken] = [token]
         for token in token_iter:
             if token.type != LsclTokenType.SELECTOR_ELEMENT:
                 break
 
-            selectors.append(token.value)
+            selector_tokens.append(token)
 
-        return LsclSelector(names=selectors), token
+        return _parse_lscl_selector(selector_tokens, options=options), token
 
     if token.type == LsclTokenType.LBRK:
         # The element is a list.
@@ -848,14 +901,19 @@ def _parse_lscl_condition(
                 )
                 token = next(token_iter)
             elif token.type == LsclTokenType.SELECTOR_ELEMENT:
-                selectors = [token.value]
+                selector_tokens: list[LsclStringToken] = [token]
                 for token in token_iter:
                     if token.type != LsclTokenType.SELECTOR_ELEMENT:
                         break
 
-                    selectors.append(token.value)
+                    selector_tokens.append(token)
 
-                new = LsclNot(condition=LsclSelector(names=selectors))
+                new = LsclNot(
+                    condition=_parse_lscl_selector(
+                        selector_tokens,
+                        options=options,
+                    ),
+                )
             else:
                 raise UnexpectedLsclToken(token)
         elif token.type == LsclTokenType.LPAREN:
@@ -908,27 +966,27 @@ def _parse_lscl_condition(
                 # "<rvalue> =~ <squot>", "<rvalue> =~ <dquot>",
                 # "<rvalue> =~ <pattern>" (match)
                 token = next(token_iter)
-                if token.type not in (
-                    LsclTokenType.SQUOT,
-                    LsclTokenType.DQUOT,
-                    LsclTokenType.PATTERN,
-                ):
+                if token.type == LsclTokenType.PATTERN:
+                    pattern = token.value
+                elif token.type in (LsclTokenType.SQUOT, LsclTokenType.DQUOT):
+                    pattern = _parse_lscl_string(token, options=options)
+                else:
                     raise UnexpectedLsclToken(token)
 
-                new = LsclMatch(value=first, pattern=token.value)
+                new = LsclMatch(value=first, pattern=pattern)
                 token = next(token_iter)
             elif token.type == LsclTokenType.NMATCH:
                 # "<rvalue> !~ <squot>", "<rvalue> !~ <dquot>",
                 # "<rvalue> !~ <pattern>" (nmatch)
                 token = next(token_iter)
-                if token.type not in (
-                    LsclTokenType.SQUOT,
-                    LsclTokenType.DQUOT,
-                    LsclTokenType.PATTERN,
-                ):
+                if token.type == LsclTokenType.PATTERN:
+                    pattern = token.value
+                elif token.type in (LsclTokenType.SQUOT, LsclTokenType.DQUOT):
+                    pattern = _parse_lscl_string(token, options=options)
+                else:
                     raise UnexpectedLsclToken(token)
 
-                new = LsclNotMatch(value=first, pattern=token.value)
+                new = LsclNotMatch(value=first, pattern=pattern)
                 token = next(token_iter)
             else:
                 # "<rvalue>" (rvalue)
@@ -1094,12 +1152,21 @@ def parse_lscl(
     /,
     *,
     accept_trailing_commas: bool = False,
+    support_escapes: bool = False,
+    field_reference_escape_style: Literal[
+        "percent",
+        "ampersand",
+        "none",
+    ] = "none",
 ) -> LsclContent:
     """Parse a string as an Logstash Configuration Language block.
 
     :param raw: Text to parse as an LSCL block.
     :param accept_trailing_commas: Whether to accept trailing commas in the
         input.
+    :param support_escapes: Whether to support escape sequences in strings.
+    :param field_reference_escape_style: Accepted escaping style in
+        selector elements.
     :return: Obtained blocks, attributes and conditions.
     :raises DecodeError: A decode error.
     """
@@ -1108,6 +1175,8 @@ def parse_lscl(
         token_iter,
         options=_LsclParsingOptions(
             accept_trailing_commas=accept_trailing_commas,
+            support_escapes=support_escapes,
+            field_reference_escape_style=field_reference_escape_style,
         ),
         end_token_type=LsclTokenType.END,
     )

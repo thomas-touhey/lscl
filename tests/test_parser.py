@@ -374,6 +374,22 @@ def test_lex_invalid(raw: str) -> None:
     "raw,content",
     (
         (
+            "if [world %%2B&&#45;] == 5 {}",
+            [
+                LsclConditions(
+                    conditions=[
+                        (
+                            LsclEqualTo(
+                                first=LsclSelector(names=["world %%2B&&#45;"]),
+                                second=5,
+                            ),
+                            [],
+                        ),
+                    ],
+                ),
+            ],
+        ),
+        (
             "0 { a => 05.2 }",
             [
                 LsclBlock(
@@ -521,8 +537,8 @@ def test_lex_invalid(raw: str) -> None:
             ],
         ),
         (
-            "if 1 <= 2 or 2 >= 1 or 1 < 2 or 2 > 1 or 'x' !~ /[a-z]+/ { "
-            + "a => b }",
+            "if 1 <= 2 or 2 >= 1 or 1 < 2 or 2 > 1 or 'x' !~ /[a-z]+/ "
+            + "or 'y' !~ \"[b-d]\" { a => b }",
             [
                 LsclConditions(
                     conditions=[
@@ -537,6 +553,7 @@ def test_lex_invalid(raw: str) -> None:
                                     LsclLessThan(first=1, second=2),
                                     LsclGreaterThan(first=2, second=1),
                                     LsclNotMatch(value="x", pattern=r"[a-z]+"),
+                                    LsclNotMatch(value="y", pattern=r"[b-d]"),
                                 ],
                             ),
                             [LsclAttribute(name="a", content="b")],
@@ -550,6 +567,46 @@ def test_lex_invalid(raw: str) -> None:
 def test_parse(raw: str, content: LsclContent) -> None:
     """Check that we can parse simple content directly."""
     assert parse_lscl(raw) == content
+
+
+def test_parse_with_percent_field_reference_encoding() -> None:
+    """Check that parsing with percent field reference encoding works."""
+    assert parse_lscl(
+        "if [world %%2B&&#45;] == 5 {}",
+        field_reference_escape_style="percent",
+    ) == [
+        LsclConditions(
+            conditions=[
+                (
+                    LsclEqualTo(
+                        first=LsclSelector(names=["world %+&&#45;"]),
+                        second=5,
+                    ),
+                    [],
+                ),
+            ],
+        ),
+    ]
+
+
+def test_parse_with_ampersand_field_reference_encoding() -> None:
+    """Check that parsing with & field reference encoding works."""
+    assert parse_lscl(
+        "if [world %%2B&&#45;] == 5 {}",
+        field_reference_escape_style="ampersand",
+    ) == [
+        LsclConditions(
+            conditions=[
+                (
+                    LsclEqualTo(
+                        first=LsclSelector(names=["world %%2B&-"]),
+                        second=5,
+                    ),
+                    [],
+                ),
+            ],
+        ),
+    ]
 
 
 @pytest.mark.parametrize(
@@ -839,7 +896,7 @@ def test_parse_file(path: str, content: LsclContent) -> None:
     with open(CONFIGS_PATH / path) as fp:
         raw = fp.read()
 
-    assert parse_lscl(raw) == content
+    assert parse_lscl(raw, support_escapes=True) == content
 
 
 @pytest.mark.parametrize(
