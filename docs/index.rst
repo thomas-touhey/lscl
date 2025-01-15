@@ -26,6 +26,7 @@ and use-cases.
     :maxdepth: 3
 
     guides
+    developer-guides
 
 References
 ----------
