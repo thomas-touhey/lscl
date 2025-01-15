@@ -259,6 +259,13 @@ from lscl.renderer import LsclRenderable, render_as_lscl
             "example {\n  if 42 in [\n    1,\n    hello world\n  ] {\n"
             + "    wow {}\n  }\n}\n",
         ),
+        (
+            LsclConditions(
+                conditions=[(False, [LsclBlock(name="wow", content=[])])],
+                default=[LsclBlock(name="owo", content=[])],
+            ),
+            "if 0 {\n  wow {}\n} else {\n  owo {}\n}\n",
+        ),
     ),
 )
 def test_render(raw: LsclRenderable, expected: str) -> None:

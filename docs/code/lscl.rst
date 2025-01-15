@@ -7,7 +7,6 @@ This section presents the code reference under the ``lscl`` namespace.
     :maxdepth: 1
 
     lscl/errors
-    lscl/filters
     lscl/lang
     lscl/parser
     lscl/renderer
