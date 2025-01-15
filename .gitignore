@@ -390,3 +390,4 @@ GitHub.sublime-settings
 # End of https://www.toptal.com/developers/gitignore/api/linux,osx,macos,sublimetext,pycharm,python,kate,kdevelop4
 
 /try_*.py
+/.gitlab-ci-local/
