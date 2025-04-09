@@ -4,7 +4,7 @@ build-backend = "poetry.core.masonry.api"
 
 [project]
 name = "lscl"
-version = "0.4"
+version = "0.5"
 description = "Logstash configuration language handling"
 readme = "README.rst"
 requires-python = ">=3.11,<4.0"
