@@ -18,7 +18,7 @@ sys.path.append(str(Path(__file__).parent / "_ext"))
 pyproject_path = Path(__file__).parent.parent / "pyproject.toml"
 
 with open(pyproject_path) as pyproject_file:
-    version = load_toml(pyproject_file)["tool"]["poetry"]["version"]
+    version = load_toml(pyproject_file)["project"]["version"]
 
 project = "lscl"
 copyright = "2024, Thomas Touhey"

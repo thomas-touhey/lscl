@@ -2,15 +2,19 @@
 requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
 
-[tool.poetry]
+[project]
 name = "lscl"
 version = "0.4"
 description = "Logstash configuration language handling"
 readme = "README.rst"
-homepage = "https://lscl.touhey.pro/"
-repository = "https://gitlab.com/kaquel/lscl"
-authors = ["Thomas Touhey <thomas@touhey.fr>"]
-keywords = ["logstash", "lscl"]
+requires-python = ">=3.11,<4.0"
+authors = [
+    { name = "Thomas Touhey", email = "thomas@touhey.fr" },
+]
+keywords = [
+    "logstash",
+    "lscl",
+]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
@@ -20,12 +24,17 @@ classifiers = [
     "Programming Language :: Python :: 3 :: Only",
     "Typing :: Typed",
 ]
+dependencies = [
+    "eval-type-backport>=0.2,<0.3; python_version < '3.10'",
+    "pydantic>=2.7,<3",
+    "typing-extensions>=4.12,<5",
+]
 
-[tool.poetry.dependencies]
-python = "^3.11"
-eval-type-backport = { version = "^0.2", markers = "python_version < '3.10'" }
-pydantic = "^2.7.1"
-typing-extensions = "^4.12.2"
+[project.urls]
+homepage = "https://lscl.touhey.pro/"
+"Documentation" = "https://lscl.touhey.pro/"
+"Source Code" = "https://gitlab.com/kaquel/lscl"
+"Bug Tracker" = "https://gitlab.com/kaquel/lscl/-/issues"
 
 [tool.poetry.group.dev.dependencies]
 pre-commit = "^3.7.0"
